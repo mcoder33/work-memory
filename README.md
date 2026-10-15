@@ -1,6 +1,6 @@
 # work-memory
 
-[![CI](https://github.com/mcoder33/work-memory/actions/workflows/ci.yml/badge.svg?branch=codex%2Finitial-memory)](https://github.com/mcoder33/work-memory/actions/workflows/ci.yml)
+[![CI](https://github.com/mcoder33/work-memory/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/mcoder33/work-memory/actions/workflows/ci.yml)
 
 Локальная память совместной работы человека и агента: события сессий → рабочее состояние → знания с основаниями → контекст следующей задачи и предложения подходов.
 
@@ -36,7 +36,7 @@ flowchart LR
 Требуются Python 3.11+ с SQLite FTS5, Git, существующий локальный vault Obsidian и доступные локальные журналы Codex. CLI работает на macOS и Linux; фоновая установка через launchd доступна на macOS.
 
 ```sh
-git clone --branch codex/initial-memory https://github.com/mcoder33/work-memory.git
+git clone https://github.com/mcoder33/work-memory.git
 cd work-memory
 ```
 

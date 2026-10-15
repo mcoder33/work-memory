@@ -1,0 +1,20 @@
+.serena/
+__pycache__/
+*.pyc
+.venv/
+*.sqlite3*
+.DS_Store
+
+# Runtime and personal data
+.env
+.env.*
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.jsonl
+config.json
+state/
+backups/
+checkpoints/
+vault/

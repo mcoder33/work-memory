@@ -452,7 +452,7 @@ class ReflectionTest(unittest.TestCase):
                         'cause': 'unknown', 'existing_rule_check': 'Package supplied; cause unknown.',
                         'evidence': [{'event_id': event['id'], 'source_id': None, 'quote': event['text']}]}]}, None
         with patch('skill_reflection.GithubCatalog.fetch', return_value=self.snapshot):
-            result = Background(self.config).run(allow_active=True, invoke=respond)
+            result = Background(self.config).run(session_id='background-session', allow_active=True, invoke=respond)
         self.assertEqual(result['status'], 'applied', result)
         item = self.r.catalog('pilot')['candidates'][0]
         self.assertEqual(item['state'], 'observed')
@@ -659,6 +659,63 @@ class ReflectionTest(unittest.TestCase):
         item = self.r.show(self.r.catalog('pilot')['candidates'][0]['id'])
         self.assertEqual(item['episodes'], ['source:unknown'])
         self.assertFalse(self.memory.packet()['pending'])
+
+    def summary_backlog(self):
+        log = self.root / 'sessions/backlog.jsonl'
+        log.parent.mkdir(exist_ok=True)
+        log.write_text(json.dumps({'type': 'session_meta', 'payload': {'id': 'summary-backlog', 'cwd': '/projects/pilot',
+            'source': 'vscode', 'timestamp': now()}, 'timestamp': now()}) + '\n')
+        self.config.update(sources=[str(log.parent)], projects={'/projects/pilot': 'pilot'}, skill_reflection={'enabled': True})
+        return log
+
+    def append_backlog(self, log, index):
+        with log.open('a') as output:
+            output.write(json.dumps({'type': 'response_item', 'payload': {'type': 'message', 'role': 'user',
+                'content': [{'type': 'input_text', 'text': 'Synthetic dialogue-explore backlog item ' + str(index)}]},
+                'timestamp': now()}) + '\n')
+
+    def alternating_response(self, prompt, directory):
+        data = json.loads(prompt.split('BEGIN_UNTRUSTED_PACKET\n')[1].split('\nEND_UNTRUSTED_PACKET')[0])
+        if 'work' in data:
+            return {'schema_version': 3, 'outcome': 'no-change', 'reason': 'Synthetic historical analysis.',
+                    'skill_observations': []}, None
+        return {'schema_version': 2, 'goal': 'Preserve synthetic backlog', 'summary': 'Synthetic summary progress.',
+                'outcome': 'Unverified synthetic transport', 'next_steps': [], 'knowledge': [], 'learning': [],
+                'skill_observations': []}, None
+
+    def test_summary_backlog_and_reflection_work_alternate_attempted_modes(self):
+        log = self.summary_backlog()
+        modes = []
+        with patch('skill_reflection.GithubCatalog.fetch', return_value=self.snapshot):
+            for index in range(4):
+                self.append_backlog(log, index)
+                result = Background(self.config).run(allow_active=True, invoke=self.alternating_response)
+                self.assertEqual(result['status'], 'applied', result)
+                modes.append(result['mode'])
+        self.assertEqual(modes, ['skill-reflection', 'memory-summary', 'skill-reflection', 'memory-summary'])
+        self.assertTrue(any(w['status'] == 'no-change' for w in self.r.status()['work']))
+        self.assertFalse(self.memory.packet('summary-backlog')['pending'])
+
+    def test_failed_reflection_attempt_yields_next_slot_to_summary(self):
+        log = self.summary_backlog()
+        self.append_backlog(log, 1)
+        def failed(prompt, directory):raise RuntimeError('Synthetic model transport failure')
+        with patch('skill_reflection.GithubCatalog.fetch', return_value=self.snapshot):
+            first = Background(self.config).run(allow_active=True, invoke=failed)
+            self.assertEqual(first['status'], 'failed')
+            second = Background(self.config).run(allow_active=True, invoke=self.alternating_response)
+        self.assertEqual(second['mode'], 'memory-summary')
+        self.assertEqual(second['status'], 'applied', second)
+        self.assertTrue(self.r.pending_work())
+
+    def test_reflection_skip_does_not_block_eligible_summary(self):
+        log = self.summary_backlog()
+        self.append_backlog(log, 1)
+        with patch('skill_reflection.GithubCatalog.fetch', return_value=self.snapshot), \
+             patch.object(Background, 'reflect', return_value={'status': 'skipped', 'reason': 'reflection-input-budget'}):
+            result = Background(self.config).run(allow_active=True, invoke=self.alternating_response)
+        self.assertEqual(result['status'], 'applied', result)
+        self.assertEqual(result['mode'], 'memory-summary')
 
 
 class GithubTransportTest(unittest.TestCase):

@@ -335,14 +335,22 @@ class Background:
                 if count >= self.settings['max_runs_per_day']:
                     return {'status': 'skipped', 'reason': 'daily-limit', 'skill_reflection': reflection}
                 packet, signature = self.packet(memory, session_id, allow_active)
-                if not packet:
+                reflection_skip = None
+                if self.reflection_enabled and not dry_run and session_id is None:
                     idle = allow_active or not any(Path(r[0]).is_file() and time.time() - Path(r[0]).stat().st_mtime < self.settings['idle_seconds']
                                                    for r in memory.db.execute('SELECT DISTINCT source FROM sessions'))
-                    if self.reflection_enabled and not dry_run and idle:
-                        work = memory.reflection.pending_work(limit=20)
-                        if work:
-                            return self.reflect(memory, reflection, work, invoke)
-                    return {'status': 'skipped', 'reason': 'no-idle-pending-session', 'skill_reflection': reflection}
+                    work = memory.reflection.pending_work(limit=20) if idle else []
+                    attempts = self.runs()
+                    last_mode = json.loads(attempts[-1].read_text()).get('mode', 'memory-summary') if attempts else 'memory-summary'
+                    # Alternate actual attempted modes while both queues have work.
+                    # Failed/started calls count too; no extra daily allowance.
+                    if work and (not packet or last_mode != 'skill-reflection'):
+                        reflection_result = self.reflect(memory, reflection, work, invoke)
+                        if reflection_result['status'] != 'skipped':
+                            return reflection_result
+                        reflection_skip = reflection_result
+                if not packet:
+                    return reflection_skip or {'status': 'skipped', 'reason': 'no-idle-pending-session', 'skill_reflection': reflection}
                 prompt, supplied = self.prepare(packet, memory)
                 if dry_run:
                     return {'status': 'ready', 'session': packet['session']['id'], 'events': len(packet['events']), 'input_chars': len(prompt), 'model': self.settings['model']}
@@ -350,7 +358,7 @@ class Background:
                 run_dir = self.root / 'artifacts' / run_id
                 run_dir.mkdir(parents=True, mode=0o700)
                 record = {'id': run_id, 'started': now(), 'session': packet['session']['id'], 'through_seq': packet['result_template']['through_seq'],
-                          'status': 'started', 'model': self.settings['model'], 'input_chars': len(prompt)}
+                          'status': 'started', 'mode': 'memory-summary', 'model': self.settings['model'], 'input_chars': len(prompt)}
                 if reflection is not None:
                     record['skill_reflection'] = reflection
                 receipt = self.root / 'runs' / (run_id + '.json')

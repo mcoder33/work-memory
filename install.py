@@ -45,8 +45,8 @@ def install():
     durable_directory(state)
     if args.hooks:
         # Stable installed copy: switching the source checkout must not remove hooks.
-        runtime = state / "runtime" / digest([(repo / p).read_text() for p in ("work_memory.py", "memory_hooks.py")])[:16]
-        for name in ("work_memory.py", "memory_hooks.py"):
+        runtime = state / "runtime" / digest([(repo / p).read_text() for p in ("work_memory.py", "memory_hooks.py", "learning.py")])[:16]
+        for name in ("work_memory.py", "memory_hooks.py", "learning.py"):
             atomic_write(runtime / name, (repo / name).read_text())
         hook_path = home / ".codex/hooks.json"
         original = hook_path.read_text() if hook_path.exists() else "{}"

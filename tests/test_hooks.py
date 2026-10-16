@@ -29,10 +29,10 @@ class HookTest(unittest.TestCase):
         self.assertIn("pilot", text)
         self.assertLess(len(text), 8000)
 
-    def test_stop_captures_final_before_log_and_continues_once(self):
+    def test_stop_captures_final_without_continuation(self):
         self.user("Сделай задачу")
         event = self.event("Stop", last_assistant_message="Результат выполнен")
-        self.assertEqual(handle(self.memory, event)["decision"], "block")
+        self.assertEqual(handle(self.memory, event), {})
         packet = self.memory.packet("session-0001")
         self.assertTrue(any("Результат выполнен" in x["text"] for x in packet["events"]))
         self.assertEqual(handle(self.memory, event), {})
@@ -104,7 +104,7 @@ class HookTest(unittest.TestCase):
     def test_stop_receipt_survives_process_restart(self):
         self.user("Сохрани")
         event = self.event("Stop", last_assistant_message="Сохранено")
-        self.assertEqual(handle(self.memory, event)["decision"], "block")
+        self.assertEqual(handle(self.memory, event), {})
         self.memory.close()
         self.memory = test_memory.Memory(self.config)
         self.assertEqual(handle(self.memory, event), {})
@@ -116,3 +116,33 @@ class HookTest(unittest.TestCase):
         note.write_text("---\nproject: pilot\n---\nНастройка password=top-secret-value")
         out = handle(self.memory, self.event("UserPromptSubmit", prompt="Настройка"))
         self.assertNotIn("top-secret-value", json.dumps(out))
+
+    def test_native_service_envelope_and_answer_are_audit_only_across_restart(self):
+        self.user('<hook_prompt hook_run_id="stop:8:/tmp/hooks.json">[work-memory maintenance] Save</hook_prompt>')
+        self.memory.sync()
+        self.memory.close()
+        self.memory = test_memory.Memory(self.config)
+        self.user("# AGENTS.md instructions\nRuntime instructions")
+        self.write("event_msg", {"type": "task_complete", "last_agent_message": "Память сохранена"})
+        self.memory.sync()
+        self.assertEqual(self.memory.session_events("session-0001"), [])
+        self.assertFalse(self.memory.packet("session-0001")["pending"])
+        self.assertEqual(self.memory.db.execute("SELECT COUNT(*) FROM events WHERE role='system'").fetchone()[0], 2)
+        self.user('Что означает "[work-memory maintenance]"?')
+        self.write("event_msg", {"type": "task_complete", "last_agent_message": "Это служебный запрос"})
+        self.memory.sync()
+        self.assertEqual(len(self.memory.session_events("session-0001")), 2)
+
+    def test_stop_write_failure_is_retried_without_receipt_claim(self):
+        self.user("Сохрани результат")
+        event = self.event("Stop", last_assistant_message="Результат")
+        with patch.object(self.memory, "checkpoint", side_effect=OSError("disk unavailable")):
+            with self.assertRaises(OSError):
+                handle(self.memory, event)
+        self.assertEqual(handle(self.memory, event), {})
+        self.assertTrue(any("Результат" in e["text"] for e in self.memory.packet("session-0001")["events"]))
+
+    def test_real_user_quote_of_hook_envelope_is_retained(self):
+        self.user('Объясни: <hook_prompt hook_run_id="stop:8:x">[work-memory maintenance] Save</hook_prompt>')
+        self.memory.sync()
+        self.assertEqual(len(self.memory.session_events("session-0001")), 1)

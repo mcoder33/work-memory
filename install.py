@@ -22,6 +22,7 @@ def install():
     parser.add_argument("--service", action="store_true", help="Собирать новые события каждые 5 минут через launchd")
     parser.add_argument("--agent-instructions", action="store_true", help="Добавить правило чтения и обобщения памяти в AGENTS.md")
     parser.add_argument("--hooks", action="store_true", help="Установить нативные hooks Codex (требуют доверия через /hooks)")
+    parser.add_argument("--runtime-only", action="store_true", help="Установить CLI в независимый от checkout runtime, не меняя hooks")
     parser.add_argument("--disable-service", action="store_true", help="Отключить launchd после проверки hooks")
     args = parser.parse_args()
     if args.service and (args.hooks or args.disable_service):
@@ -43,11 +44,13 @@ def install():
         raise ValueError("В конфигурации уже выбран другой vault")
     state = Path(json.loads(config.read_text())["state"])
     durable_directory(state)
-    if args.hooks:
+    if args.hooks or args.runtime_only:
         # Stable installed copy: switching the source checkout must not remove hooks.
-        runtime = state / "runtime" / digest([(repo / p).read_text() for p in ("work_memory.py", "memory_hooks.py", "learning.py")])[:16]
-        for name in ("work_memory.py", "memory_hooks.py", "learning.py"):
+        runtime = state / "runtime" / digest([(repo / p).read_text() for p in ("work_memory.py", "memory_hooks.py", "learning.py", "skill_reflection.py")])[:16]
+        for name in ("work_memory.py", "memory_hooks.py", "learning.py", "skill_reflection.py"):
             atomic_write(runtime / name, (repo / name).read_text())
+        repo = runtime
+    if args.hooks:
         hook_path = home / ".codex/hooks.json"
         original = hook_path.read_text() if hook_path.exists() else "{}"
         merged = merge_hooks(json.loads(original), definitions(sys.executable, runtime / "memory_hooks.py", config))
@@ -55,7 +58,6 @@ def install():
             atomic_write(state / ("hooks-before-" + digest(original)[:16] + ".json"), original)
             atomic_write(hook_path, json.dumps(merged, ensure_ascii=False, indent=2) + "\n",
                          expected=digest(original) if hook_path.exists() else None)
-        repo = runtime
     cli = home / ".local/bin/work-memory"
     wrapper = "#!/bin/sh\nexec " + shlex.quote(sys.executable) + " " + shlex.quote(str(repo / "work_memory.py")) + ' "$@"\n'
     if cli.exists() and "work_memory.py" not in cli.read_text():

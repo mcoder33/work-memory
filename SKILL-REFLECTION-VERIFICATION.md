@@ -39,6 +39,11 @@ source snapshot; sessions=0, candidates=0, временное состояние
 и установленные навыки не использовались для этого smoke. Это транспортная проверка,
 не поведенческий trial и не доказательство полезности инструкции.
 
+Narrow re-review принял fairness commit `5552abf`: непрерывный backlog обобщений
+не вытесняет historical reflection. После этого установлен runtime именно принятого
+кода; SHA256 background.py совпал с reviewed source. Повторный installed dry-run
+не запускал модель; config/settings/hooks и прежний interval сохранены.
+
 Локальная активация: перед изменениями сохранены config, wrappers, background settings,
 plist и согласованный SQLite backup. Включены reflection/budget2/абсолютный gh;
 CLI и существующий curator используют независимые content-addressed runtime с новым

@@ -17,7 +17,7 @@ import subprocess
 import sys
 import tempfile
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 HOME = Path.home()
 DEFAULT_CONFIG = HOME / ".config/work-memory/config.json"
 MAX_LINE = 8 * 1024 * 1024
@@ -146,6 +146,8 @@ class Memory:
             self.db.execute("PRAGMA fullfsync=ON")
         self.db.execute("PRAGMA foreign_keys=ON")
         self.db.executescript("""
+        CREATE TABLE IF NOT EXISTS service_turns(
+          session TEXT PRIMARY KEY, active INTEGER NOT NULL DEFAULT 0);
         CREATE TABLE IF NOT EXISTS cursors(
           path TEXT PRIMARY KEY, identity TEXT NOT NULL, offset INTEGER NOT NULL,
           line INTEGER NOT NULL, session TEXT, size INTEGER NOT NULL, mtime INTEGER NOT NULL);
@@ -178,6 +180,11 @@ class Memory:
         CREATE VIRTUAL TABLE IF NOT EXISTS search USING fts5(
           path UNINDEXED, project UNINDEXED, body, tokenize='unicode61');
         """)
+        # Preserve audit rows while withdrawing service prompts from user authority.
+        with self.lock(), self.db:
+            for row in self.db.execute("SELECT id,text FROM events WHERE role='user'").fetchall():
+                if self.service_prompt(row["text"]):
+                    self.db.execute("UPDATE events SET role='system' WHERE id=?", (row["id"],))
         self.recover()
 
     def close(self):
@@ -403,6 +410,8 @@ class Memory:
             if cursor and cursor["identity"] == identity and cursor["offset"] <= stat.st_size and cursor["session"] == sid:
                 offset, line_no = cursor["offset"], cursor["line"]
             stream.seek(offset)
+            service = self.db.execute("SELECT active FROM service_turns WHERE session=?", (sid,)).fetchone()
+            service = bool(service[0]) if service and offset > len(first) else False
             before = self.db.total_changes
             while True:
                 begin = stream.tell()
@@ -433,9 +442,18 @@ class Memory:
                 # Ignore nested session_meta from copied fork history: first header owns the file.
                 if item.get("type") == "response_item" and payload.get("type") == "message" and payload.get("role") == "user":
                     parts = []
+                    texts = [part.get("text", "") for part in payload.get("content", [])
+                             if part.get("type") in ("input_text", "text")]
+                    incoming_service = any(self.service_prompt(t) for t in texts)
+                    if incoming_service:
+                        service = True
+                    elif any(not self.injected(t) for t in texts):
+                        service = False
+                    if incoming_service:
+                        self.add_event(sid, "system", "\n\n".join(texts), timestamp, path, line_no)
                     for part in payload.get("content", []):
                         text = part.get("text", "")
-                        if part.get("type") not in ("input_text", "text") or self.injected(text):
+                        if service or part.get("type") not in ("input_text", "text") or self.injected(text):
                             continue
                         parts.append(text)
                     if parts:
@@ -446,10 +464,18 @@ class Memory:
                         state = {"task_started": "running", "task_complete": "completed", "turn_aborted": "interrupted"}[kind]
                         self.db.execute("UPDATE sessions SET state=?,updated=? WHERE id=? AND updated<=?", (state, timestamp, sid, timestamp))
                     if kind == "task_complete" and isinstance(payload.get("last_agent_message"), str):
-                        self.add_event(sid, "assistant", payload["last_agent_message"], timestamp, path, line_no)
+                        self.add_event(sid, "system" if service else "assistant", payload["last_agent_message"], timestamp, path, line_no)
+            self.db.execute("INSERT OR REPLACE INTO service_turns VALUES(?,?)", (sid, int(service)))
             self.db.execute("INSERT OR REPLACE INTO cursors VALUES(?,?,?,?,?,?,?)",
                             (str(path), identity, stream.tell(), line_no, sid, stat.st_size, stat.st_mtime_ns))
             return self.db.total_changes - before
+
+    @staticmethod
+    def service_prompt(text):
+        """Recognize the native envelope, not mentions/quotes of maintenance."""
+        text = text.strip()
+        return bool(text.startswith("[work-memory maintenance]") or re.fullmatch(
+            r'<hook_prompt\s+hook_run_id="[^"\n]+">\s*\[work-memory maintenance\][\s\S]*</hook_prompt>', text))
 
     @staticmethod
     def injected(text):
@@ -462,7 +488,7 @@ class Memory:
         return f"Память/Сессии/{sid}.md"
 
     def session_events(self, sid):
-        return self.db.execute("SELECT * FROM events WHERE session=? ORDER BY seq", (sid,)).fetchall()
+        return self.db.execute("SELECT * FROM events WHERE session=? AND role IN ('user','assistant') ORDER BY seq", (sid,)).fetchall()
 
     def render_sessions(self):
         for session in self.db.execute("SELECT * FROM sessions ORDER BY updated"):
@@ -596,7 +622,7 @@ class Memory:
         for session in sessions[:30]:
             if not self.session_events(session["id"]):
                 continue
-            count = self.db.execute("SELECT COUNT(*) FROM events WHERE session=? AND seq>?", (session["id"], session["through_seq"])).fetchone()[0]
+            count = self.db.execute("SELECT COUNT(*) FROM events WHERE session=? AND seq>? AND role IN ('user','assistant')", (session["id"], session["through_seq"])).fetchone()[0]
             body += f"- {wiki(self.session_path(session['id']))} — {session['project']}; новых событий для обобщения: {count}.\n"
         body += "\n## Состояние системы\n\n"
         body += f"Сессий: {len(sessions)}. Записей знаний: {len(knowledge)}. Индекс и очередь: `{self.state}`.\n\n"
@@ -648,7 +674,7 @@ class Memory:
     def status(self):
         result = {name: self.db.execute(f"SELECT COUNT(*) FROM {name}").fetchone()[0]
                   for name in ("sessions", "events", "knowledge", "documents")}
-        result["pending_sessions"] = self.db.execute("SELECT COUNT(*) FROM sessions s WHERE EXISTS(SELECT 1 FROM events e WHERE e.session=s.id AND e.seq>s.through_seq)").fetchone()[0]
+        result["pending_sessions"] = self.db.execute("SELECT COUNT(*) FROM sessions s WHERE EXISTS(SELECT 1 FROM events e WHERE e.session=s.id AND e.seq>s.through_seq AND e.role IN ('user','assistant'))").fetchone()[0]
         result["pending_writes"] = self.db.execute("SELECT COUNT(*) FROM file_outbox").fetchone()[0]
         result["issues"] = [dict(row) for row in self.db.execute("SELECT * FROM issues")]
         result["center"] = str(self.vault / "Центр памяти.md")
@@ -723,7 +749,7 @@ class Memory:
                                if json.loads(r[0])["project"] in (project, "global") and json.loads(r[0])["status"] in ("open", "proposed")][:8]}
 
     def packet(self, sid=None, project=None, chars=24000):
-        query = "SELECT * FROM sessions s WHERE EXISTS(SELECT 1 FROM events e WHERE e.session=s.id AND e.seq>s.through_seq)"
+        query = "SELECT * FROM sessions s WHERE EXISTS(SELECT 1 FROM events e WHERE e.session=s.id AND e.seq>s.through_seq AND e.role IN ('user','assistant'))"
         params = []
         if sid:
             query += " AND s.id=?"
@@ -750,7 +776,7 @@ class Memory:
                 "note_conflicts": [dict(r) for r in self.db.execute("SELECT * FROM issues WHERE key LIKE 'conflict:%'")],
                 "existing_knowledge": [{**json.loads(r["payload"]), "revision": r["revision"]} for r in self.db.execute("SELECT * FROM knowledge")
                                        if json.loads(r["payload"])["project"] in (session["project"], "global")],
-                "more_events": self.db.execute("SELECT COUNT(*) FROM events WHERE session=? AND seq>?", (session["id"], covered)).fetchone()[0]}
+                "more_events": self.db.execute("SELECT COUNT(*) FROM events WHERE session=? AND seq>? AND role IN ('user','assistant')", (session["id"], covered)).fetchone()[0]}
 
     def consolidate(self, result):
         result = json.loads(json.dumps(result))
@@ -765,7 +791,7 @@ class Memory:
                 raise ValueError("Снимок сессии изменён; получите новый packet")
             through = result["through_seq"]
             event = self.db.execute("SELECT * FROM events WHERE session=? AND seq=?", (sid, through)).fetchone()
-            if not event or through <= session["through_seq"]:
+            if not event or event["role"] not in ("user", "assistant") or through <= session["through_seq"]:
                 raise ValueError("Недопустимая граница обобщения")
             summary = {}
             for key in ("goal", "summary", "outcome"):
@@ -797,7 +823,7 @@ class Memory:
                 for evidence in item["evidence"]:
                     source = self.db.execute("SELECT * FROM events WHERE id=?", (evidence.get("event_id"),)).fetchone()
                     quotation = evidence.get("quote", "")
-                    if not source or not isinstance(quotation, str) or not quotation.strip() or quotation not in source["text"]:
+                    if not source or source["role"] not in ("user", "assistant") or not isinstance(quotation, str) or not quotation.strip() or quotation not in source["text"]:
                         raise ValueError("Цитата не найдена в источнике: " + key)
                     origin = self.db.execute("SELECT project FROM sessions WHERE id=?", (source["session"],)).fetchone()[0]
                     if item["project"] != "global" and origin not in (item["project"], "global"):

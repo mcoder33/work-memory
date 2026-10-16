@@ -146,6 +146,8 @@ class Memory:
             self.db.execute("PRAGMA fullfsync=ON")
         self.db.execute("PRAGMA foreign_keys=ON")
         self.db.executescript("""
+        CREATE TABLE IF NOT EXISTS service_turns(
+          session TEXT PRIMARY KEY, active INTEGER NOT NULL DEFAULT 0);
         CREATE TABLE IF NOT EXISTS cursors(
           path TEXT PRIMARY KEY, identity TEXT NOT NULL, offset INTEGER NOT NULL,
           line INTEGER NOT NULL, session TEXT, size INTEGER NOT NULL, mtime INTEGER NOT NULL);
@@ -410,6 +412,8 @@ class Memory:
             if cursor and cursor["identity"] == identity and cursor["offset"] <= stat.st_size and cursor["session"] == sid:
                 offset, line_no = cursor["offset"], cursor["line"]
             stream.seek(offset)
+            service = self.db.execute("SELECT active FROM service_turns WHERE session=?", (sid,)).fetchone()
+            service = bool(service[0]) if service and offset > len(first) else False
             before = self.db.total_changes
             while True:
                 begin = stream.tell()
@@ -440,9 +444,18 @@ class Memory:
                 # Ignore nested session_meta from copied fork history: first header owns the file.
                 if item.get("type") == "response_item" and payload.get("type") == "message" and payload.get("role") == "user":
                     parts = []
+                    texts = [part.get("text", "") for part in payload.get("content", [])
+                             if part.get("type") in ("input_text", "text")]
+                    incoming_service = any(self.service_prompt(t) for t in texts)
+                    if incoming_service:
+                        service = True
+                    elif any(not self.injected(t) for t in texts):
+                        service = False
+                    if incoming_service:
+                        self.add_event(sid, "system", "\n\n".join(texts), timestamp, path, line_no)
                     for part in payload.get("content", []):
                         text = part.get("text", "")
-                        if part.get("type") not in ("input_text", "text") or self.injected(text):
+                        if service or part.get("type") not in ("input_text", "text") or self.injected(text):
                             continue
                         parts.append(text)
                     if parts:
@@ -453,10 +466,18 @@ class Memory:
                         state = {"task_started": "running", "task_complete": "completed", "turn_aborted": "interrupted"}[kind]
                         self.db.execute("UPDATE sessions SET state=?,updated=? WHERE id=? AND updated<=?", (state, timestamp, sid, timestamp))
                     if kind == "task_complete" and isinstance(payload.get("last_agent_message"), str):
-                        self.add_event(sid, "assistant", payload["last_agent_message"], timestamp, path, line_no)
+                        self.add_event(sid, "system" if service else "assistant", payload["last_agent_message"], timestamp, path, line_no)
+            self.db.execute("INSERT OR REPLACE INTO service_turns VALUES(?,?)", (sid, int(service)))
             self.db.execute("INSERT OR REPLACE INTO cursors VALUES(?,?,?,?,?,?,?)",
                             (str(path), identity, stream.tell(), line_no, sid, stat.st_size, stat.st_mtime_ns))
             return self.db.total_changes - before
+
+    @staticmethod
+    def service_prompt(text):
+        """Recognize the native envelope, not mentions/quotes of maintenance."""
+        text = text.strip()
+        return bool(text.startswith("[work-memory maintenance]") or re.fullmatch(
+            r'<hook_prompt\s+hook_run_id="[^"\n]+">\s*\[work-memory maintenance\][\s\S]*</hook_prompt>', text))
 
     @staticmethod
     def injected(text):
@@ -575,7 +596,7 @@ class Memory:
                 if summary:
                     body += f"Цель: {summary['goal']}\n\nСостояние: {summary['outcome']}\n\n"
                     body += "\n".join("- " + step for step in summary["next_steps"]) + "\n\n"
-                    last = self.db.execute("SELECT MAX(seq) FROM events WHERE session=?", (session["id"],)).fetchone()[0]
+                    last = self.db.execute("SELECT MAX(seq) FROM events WHERE session=? AND role IN ('user','assistant')", (session["id"],)).fetchone()[0]
                     if last and last > session["through_seq"]:
                         body += "Есть события после этого снимка — сначала прочитать обновление.\n\n"
                 else:

@@ -119,7 +119,7 @@ class BackgroundTest(unittest.TestCase):
         self.assertFalse(output['additionalProperties'])
         self.assertEqual(set(output['required']), set(output['properties']))
 
-    def fake_codex(self, tool=False):
+    def fake_codex(self, tool=False, refresh=False, concurrent_auth=None):
         exe = self.root / 'fake-codex'
         code = '''import json,sys,os
 from pathlib import Path
@@ -134,6 +134,10 @@ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':12,'output_tok
 print(json.dumps({'type':'item.completed','item':{'type':'error','message':'Nonfatal runtime diagnostic'}}))
 '''
         if tool:code += "print(json.dumps({'type':'item.completed','item':{'type':'command_execution'}}))\n"
+        if refresh:
+            code += "(Path(os.environ['CODEX_HOME'])/'auth.json').write_text('rotated-token-fixture')\n"
+        if concurrent_auth:
+            code += 'Path(' + repr(str(concurrent_auth)) + ").write_text('new-login-fixture')\n"
         exe.write_text('#!' + sys.executable + '\n' + code); exe.chmod(0o700)
         return str(exe)
 
@@ -206,3 +210,13 @@ print(json.dumps({'type':'item.completed','item':{'type':'error','message':'Nonf
         other.write_text(json.dumps({'type':'session_meta','payload':{'id':'other-session-0001',
             'cwd':'/other','timestamp':'2026-10-16T00:00:00Z'}})+'\n')
         self.assertEqual(self.worker().run()['reason'],'no-idle-pending-session')
+
+    def test_auth_refresh_preserves_a_concurrent_login(self):
+        auth_home=self.root/'auth-home';auth_home.mkdir();auth=auth_home/'auth.json'
+        directory=self.root/'invoke';directory.mkdir()
+        for concurrent in (False,True):
+            auth.write_text('original-token-fixture')
+            exe=self.fake_codex(refresh=True, concurrent_auth=auth if concurrent else None)
+            with patch.dict(os.environ, {'CODEX_HOME':str(auth_home)}):
+                self.worker(codex=exe).invoke('Synthetic packet',directory)
+            self.assertEqual(auth.read_text(),'new-login-fixture' if concurrent else 'rotated-token-fixture')

@@ -67,6 +67,7 @@ class InstallTest(unittest.TestCase):
         repo = self.root / "clone with spaces"
         repo.mkdir()
         shutil.copyfile(Path(work_memory.__file__), repo / "work_memory.py")
+        shutil.copyfile(Path(work_memory.__file__).with_name("learning.py"), repo / "learning.py")
         self.run_install(repo=repo)
         cli = self.home / ".local/bin/work-memory"
         result = subprocess.run([str(cli), "--config", str(self.config), "status"],

@@ -17,7 +17,7 @@ import subprocess
 import sys
 import tempfile
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 HOME = Path.home()
 DEFAULT_CONFIG = HOME / ".config/work-memory/config.json"
 MAX_LINE = 8 * 1024 * 1024
@@ -786,10 +786,12 @@ class Memory:
                                        if json.loads(r["payload"])["project"] in (session["project"], "global")],
                 "more_events": self.db.execute("SELECT COUNT(*) FROM events WHERE session=? AND seq>? AND role IN ('user','assistant')", (session["id"], covered)).fetchone()[0]}
 
-    def consolidate(self, result):
+    def consolidate(self, result, guard=None):
         result = json.loads(json.dumps(result))
         operation = digest(result)
         with self.write():
+            if guard is not None:
+                guard()
             receipt = self.db.execute("SELECT result FROM applied_operations WHERE id=?", (operation,)).fetchone()
             if receipt:
                 return json.loads(receipt[0])

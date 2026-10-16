@@ -68,6 +68,7 @@ class InstallTest(unittest.TestCase):
         repo.mkdir()
         shutil.copyfile(Path(work_memory.__file__), repo / "work_memory.py")
         shutil.copyfile(Path(work_memory.__file__).with_name("learning.py"), repo / "learning.py")
+        shutil.copyfile(Path(work_memory.__file__).with_name("skill_reflection.py"), repo / "skill_reflection.py")
         self.run_install(repo=repo)
         cli = self.home / ".local/bin/work-memory"
         result = subprocess.run([str(cli), "--config", str(self.config), "status"],
@@ -81,6 +82,22 @@ class InstallTest(unittest.TestCase):
                 self.run_install("--service")
         self.assertFalse(self.config.exists())
         self.assertFalse((self.home / ".local/bin/work-memory").exists())
+
+    def test_runtime_only_has_all_modules_and_preserves_hooks_and_settings(self):
+        hooks = self.home / '.codex/hooks.json'
+        hooks.write_text('{"synthetic":"unchanged"}')
+        self.run_install()
+        before = self.config.read_bytes()
+        self.run_install('--runtime-only')
+        cli = self.home / '.local/bin/work-memory'
+        self.assertIn('/runtime/', cli.read_text())
+        self.assertEqual(self.config.read_bytes(), before)
+        self.assertEqual(hooks.read_text(), '{"synthetic":"unchanged"}')
+        self.assertFalse(self.agents.exists())
+        result = subprocess.run([str(cli), '--config', str(self.config), 'reflection-status'],
+                                capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)['catalog']['status'], 'unknown')
 
 
 if __name__ == "__main__":

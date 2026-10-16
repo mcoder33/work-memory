@@ -454,7 +454,7 @@ class Memory:
     @staticmethod
     def injected(text):
         text = text.lstrip()
-        return not text or text.startswith(("# AGENTS.md instructions", "<environment_context>", "<permissions instructions>",
+        return not text or text.startswith(("[work-memory maintenance]", "# AGENTS.md instructions", "<environment_context>", "<permissions instructions>",
                                            "<skills_instructions>", "<INSTRUCTIONS>", "<user_instructions>",
                                            "<codex_internal_context", "<subagent_notification>", "<turn_aborted>"))
 

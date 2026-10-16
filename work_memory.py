@@ -17,7 +17,7 @@ import subprocess
 import sys
 import tempfile
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 HOME = Path.home()
 DEFAULT_CONFIG = HOME / ".config/work-memory/config.json"
 MAX_LINE = 8 * 1024 * 1024

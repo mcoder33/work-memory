@@ -16,7 +16,11 @@ EVENTS = ("SessionStart", "UserPromptSubmit", "Stop")
 
 def definitions(python, script, config):
     command = " ".join(shlex.quote(str(p)) for p in (python, script, "--config", config))
+    labels = {"SessionStart": "Память — восстановление контекста",
+              "UserPromptSubmit": "Память — контекст текущего запроса",
+              "Stop": "Память — тихое сохранение ответа"}
     return {event: [{"hooks": [{"type": "command", "command": command,
+                                "statusMessage": labels[event],
                                 "timeout": 25, **({"additionalContextLimit": 2200}
                                                   if event != "Stop" else {})}]}]
             for event in EVENTS}
